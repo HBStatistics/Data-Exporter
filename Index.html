@@ -112,6 +112,30 @@
             gap: 8px;
         }
 
+        .field.inline-toggle {
+            justify-content: flex-end;
+        }
+
+        .toggle {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            min-height: 44px;
+            padding: 0 2px;
+            color: var(--muted);
+            font-size: 0.95rem;
+            text-transform: none;
+            letter-spacing: 0;
+            font-weight: 400;
+        }
+
+        .toggle input {
+            width: 18px;
+            height: 18px;
+            margin: 0;
+            accent-color: var(--accent);
+        }
+
         label {
             font-size: 0.85rem;
             font-weight: 700;
@@ -180,7 +204,7 @@
 
         .toolbar {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) repeat(3, minmax(160px, auto));
+            grid-template-columns: minmax(0, 1fr) repeat(4, minmax(160px, auto));
             align-items: end;
             gap: 12px;
         }
@@ -423,6 +447,12 @@
                 <p class="section-heading">Download CSV</p>
                 <div class="toolbar">
                     <p id="status" class="status">Ready.</p>
+                    <div class="field inline-toggle">
+                        <label class="toggle" for="estimate-subscribers">
+                            <input id="estimate-subscribers" type="checkbox">
+                            <span>Linear estimate subscribers after 09/17/2019</span>
+                        </label>
+                    </div>
                     <div class="field">
                         <label for="download-layout">Layout</label>
                         <select id="download-layout">
@@ -498,6 +528,7 @@
         const downloadButton = document.getElementById("download-button");
         const downloadLayoutSelect = document.getElementById("download-layout");
         const downloadFrequencySelect = document.getElementById("download-frequency");
+        const estimateSubscribersInput = document.getElementById("estimate-subscribers");
         const fetchButton = document.getElementById("fetch-button");
         const channelIdInput = document.getElementById("channel-id");
 
@@ -514,6 +545,7 @@
         };
         const DEFAULT_FROM_DATE = "2005-04-01";
         const DEFAULT_TO_DATE = "2026-04-02";
+        const SUBSCRIBER_ESTIMATE_START = new Date("2019-09-17T00:00:00Z").getTime();
         const RANDOM_CHANNEL_IDS = [
             "UCw4ccFtBN7dhQBcHmE0qylg",
             "UCX6OQ3DkcsbYNE6H8uQQuVA",
@@ -528,6 +560,7 @@
         ];
 
         let latestChannel = null;
+        let latestRawStats = [];
         let latestStats = [];
 
         form.addEventListener("submit", async (event) => {
@@ -566,14 +599,15 @@
                 }
 
                 latestChannel = channel;
-                latestStats = channel.stats
+                latestRawStats = channel.stats
                     .slice()
                     .sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
 
-                renderChannel(channel, latestStats);
+                rerenderLatestChannel();
                 clearStatus();
             } catch (error) {
                 latestChannel = null;
+                latestRawStats = [];
                 latestStats = [];
                 resultsEl.classList.add("hidden");
                 downloadButton.disabled = true;
@@ -590,8 +624,18 @@
 
             const frequency = downloadFrequencySelect.value || "monthly";
             const layout = downloadLayoutSelect.value || "vertical";
-            const exportStats = resampleStats(latestStats, frequency);
-            const rows = buildCsvRows(latestChannel, exportStats, layout, frequency);
+            const exportRawStats = resampleStats(attachSubscriberSeries(latestRawStats), frequency);
+            const exportStats = addDailyGainFields(
+                buildExportEstimatedStats(exportRawStats),
+                "estimated_subscribers",
+                "estimated_daily_gain"
+            );
+            const exportRawStatsWithGains = addDailyGainFields(
+                exportRawStats,
+                "original_subscribers",
+                "original_daily_gain"
+            );
+            const rows = buildCsvRows(exportStats, exportRawStatsWithGains, layout);
 
             const csv = rows.map((row) => row.map(escapeCsv).join(",")).join("\n");
             const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
@@ -607,6 +651,12 @@
             link.click();
             link.remove();
             URL.revokeObjectURL(url);
+        });
+
+        estimateSubscribersInput.addEventListener("change", () => {
+            if (latestChannel && latestRawStats.length) {
+                rerenderLatestChannel();
+            }
         });
 
         window.addEventListener("load", () => {
@@ -630,10 +680,28 @@
             downloadButton.disabled = false;
         }
 
+        function rerenderLatestChannel() {
+            if (!latestChannel || !latestRawStats.length) {
+                return;
+            }
+
+            latestStats = getProcessedStats(latestRawStats);
+            renderChannel(latestChannel, latestStats);
+        }
+
+        function getProcessedStats(stats) {
+            const withSeries = attachSubscriberSeries(stats);
+            if (!estimateSubscribersInput.checked) {
+                return withSeries;
+            }
+
+            return applySubscriberEstimation(withSeries);
+        }
+
         function renderLineChart(target, stats, metric, stroke) {
             const data = downsample(stats, 220).map((entry) => ({
                 x: new Date(entry.recorded_at).getTime(),
-                y: Number(entry[metric]) || 0,
+                y: Number(getMetricValue(entry, metric)) || 0,
                 recordedAt: entry.recorded_at
             }));
 
@@ -789,29 +857,38 @@
             tableBodyEl.innerHTML = latestRows.map((entry) => `
                 <tr>
                     <td>${escapeHtml(formatDate(entry.recorded_at))}</td>
-                    <td>${escapeHtml(formatNumber(entry.subscribers))}</td>
+                    <td>${escapeHtml(formatNumber(getMetricValue(entry, "subscribers")))}</td>
                     <td>${escapeHtml(formatNumber(entry.views))}</td>
                     <td>${escapeHtml(formatNumber(entry.videos))}</td>
                 </tr>
             `).join("");
         }
 
-        function buildCsvRows(channel, stats, layout, frequency) {
+        function buildCsvRows(stats, rawStats, layout) {
             if (layout === "horizontal") {
-                return buildHorizontalRows(channel, stats, frequency);
+                return buildHorizontalRows(stats, rawStats);
             }
 
             const rows = [
-                ["channel_id", "channel_title", "frequency", "recorded_at", "subscribers", "views", "videos"]
+                [
+                    "recorded_at",
+                    "original_subscribers",
+                    "original_daily_gain",
+                    "estimated_subscribers",
+                    "estimated_daily_gain",
+                    "views",
+                    "videos"
+                ]
             ];
 
-            stats.forEach((entry) => {
+            stats.forEach((entry, index) => {
+                const rawEntry = rawStats[index] || entry;
                 rows.push([
-                    channel.id || "",
-                    channel.title || "",
-                    frequency,
                     entry.recorded_at || "",
-                    entry.subscribers ?? "",
+                    rawEntry.original_subscribers ?? rawEntry.subscribers ?? "",
+                    rawEntry.original_daily_gain ?? "",
+                    entry.estimated_subscribers ?? entry.original_subscribers ?? entry.subscribers ?? "",
+                    entry.estimated_daily_gain ?? "",
                     entry.views ?? "",
                     entry.videos ?? ""
                 ]);
@@ -820,29 +897,210 @@
             return rows;
         }
 
-        function buildHorizontalRows(channel, stats, frequency) {
+        function buildHorizontalRows(stats, rawStats) {
             const header = ["metric"];
-            const subscribersRow = ["subscribers"];
+            const originalSubscribersRow = ["original_subscribers"];
+            const originalDailyGainRow = ["original_daily_gain"];
+            const estimatedSubscribersRow = ["estimated_subscribers"];
+            const estimatedDailyGainRow = ["estimated_daily_gain"];
             const viewsRow = ["views"];
             const videosRow = ["videos"];
 
-            stats.forEach((entry) => {
+            stats.forEach((entry, index) => {
+                const rawEntry = rawStats[index] || entry;
                 header.push(entry.recorded_at || "");
-                subscribersRow.push(entry.subscribers ?? "");
+                originalSubscribersRow.push(rawEntry.original_subscribers ?? rawEntry.subscribers ?? "");
+                originalDailyGainRow.push(rawEntry.original_daily_gain ?? "");
+                estimatedSubscribersRow.push(entry.estimated_subscribers ?? entry.original_subscribers ?? entry.subscribers ?? "");
+                estimatedDailyGainRow.push(entry.estimated_daily_gain ?? "");
                 viewsRow.push(entry.views ?? "");
                 videosRow.push(entry.videos ?? "");
             });
 
             return [
-                ["channel_id", channel.id || ""],
-                ["channel_title", channel.title || ""],
-                ["frequency", frequency],
-                [],
                 header,
-                subscribersRow,
+                originalSubscribersRow,
+                originalDailyGainRow,
+                estimatedSubscribersRow,
+                estimatedDailyGainRow,
                 viewsRow,
                 videosRow
             ];
+        }
+
+        function buildExportEstimatedStats(stats) {
+            const cloned = stats.map((entry) => ({ ...entry }));
+
+            if (!estimateSubscribersInput.checked) {
+                return cloned;
+            }
+
+            return applySubscriberEstimationByStep(cloned);
+        }
+
+        function attachSubscriberSeries(stats) {
+            return stats.map((entry) => ({
+                ...entry,
+                original_subscribers: smoothSubscriberValue(Number(entry.subscribers) || 0, entry.recorded_at),
+                estimated_subscribers: smoothSubscriberValue(Number(entry.subscribers) || 0, entry.recorded_at)
+            }));
+        }
+
+        function smoothSubscriberValue(value, recordedAt) {
+            const time = new Date(recordedAt).getTime();
+            if (time < SUBSCRIBER_ESTIMATE_START || value <= 0) {
+                return value;
+            }
+
+            const magnitude = Math.floor(Math.log10(value));
+            const precisionPower = Math.max(0, magnitude - 2);
+            const step = 10 ** precisionPower;
+            return Math.floor(value / step) * step;
+        }
+
+        function applySubscriberEstimation(stats) {
+            if (stats.length < 2) {
+                return stats;
+            }
+
+            for (let index = 0; index < stats.length; index += 1) {
+                stats[index].estimated_subscribers = stats[index].original_subscribers;
+            }
+
+            let anchorStart = -1;
+
+            for (let index = 0; index < stats.length; index += 1) {
+                const current = stats[index];
+                const currentTime = new Date(current.recorded_at).getTime();
+
+                if (currentTime < SUBSCRIBER_ESTIMATE_START) {
+                    continue;
+                }
+
+                if (anchorStart === -1) {
+                    anchorStart = index;
+                    continue;
+                }
+
+                if (current.original_subscribers === stats[anchorStart].original_subscribers) {
+                    continue;
+                }
+
+                interpolateSubscriberSegment(stats, anchorStart, index);
+                anchorStart = index;
+            }
+
+            return stats;
+        }
+
+        function applySubscriberEstimationByStep(stats) {
+            if (stats.length < 2) {
+                return stats;
+            }
+
+            for (let index = 0; index < stats.length; index += 1) {
+                stats[index].estimated_subscribers = stats[index].original_subscribers;
+            }
+
+            let anchorStart = -1;
+
+            for (let index = 0; index < stats.length; index += 1) {
+                const current = stats[index];
+                const currentTime = new Date(current.recorded_at).getTime();
+
+                if (currentTime < SUBSCRIBER_ESTIMATE_START) {
+                    continue;
+                }
+
+                if (anchorStart === -1) {
+                    anchorStart = index;
+                    continue;
+                }
+
+                if (current.original_subscribers === stats[anchorStart].original_subscribers) {
+                    continue;
+                }
+
+                interpolateSubscriberSegmentByStep(stats, anchorStart, index);
+                anchorStart = index;
+            }
+
+            return stats;
+        }
+
+        function interpolateSubscriberSegment(stats, startIndex, endIndex) {
+            if (endIndex - startIndex <= 1) {
+                return;
+            }
+
+            const startEntry = stats[startIndex];
+            const endEntry = stats[endIndex];
+            const startTime = new Date(startEntry.recorded_at).getTime();
+            const endTime = new Date(endEntry.recorded_at).getTime();
+            const totalDuration = endTime - startTime;
+
+            if (totalDuration <= 0) {
+                return;
+            }
+
+            for (let index = startIndex + 1; index < endIndex; index += 1) {
+                const currentTime = new Date(stats[index].recorded_at).getTime();
+                const ratio = (currentTime - startTime) / totalDuration;
+                stats[index].estimated_subscribers = Math.round(
+                    startEntry.original_subscribers +
+                    (endEntry.original_subscribers - startEntry.original_subscribers) * ratio
+                );
+            }
+        }
+
+        function interpolateSubscriberSegmentByStep(stats, startIndex, endIndex) {
+            const steps = endIndex - startIndex;
+            if (steps <= 1) {
+                return;
+            }
+
+            const startValue = Number(stats[startIndex].original_subscribers) || 0;
+            const endValue = Number(stats[endIndex].original_subscribers) || 0;
+            const delta = endValue - startValue;
+
+            for (let index = startIndex + 1; index < endIndex; index += 1) {
+                const progress = (index - startIndex) / steps;
+                stats[index].estimated_subscribers = Math.round(
+                    startValue + delta * progress
+                );
+            }
+        }
+
+        function addDailyGainFields(stats, subscriberField, gainField) {
+            return stats.map((entry, index) => {
+                if (index === 0) {
+                    return {
+                        ...entry,
+                        [gainField]: ""
+                    };
+                }
+
+                const previous = stats[index - 1];
+                const currentValue = Number(entry[subscriberField]) || 0;
+                const previousValue = Number(previous[subscriberField]) || 0;
+
+                return {
+                    ...entry,
+                    [gainField]: currentValue - previousValue
+                };
+            });
+        }
+
+        function getMetricValue(entry, metric) {
+            if (metric === "subscribers" && estimateSubscribersInput.checked) {
+                return entry.estimated_subscribers ?? entry.original_subscribers ?? entry.subscribers;
+            }
+
+            if (metric === "subscribers") {
+                return entry.original_subscribers ?? entry.subscribers;
+            }
+
+            return entry[metric];
         }
 
         function resampleStats(stats, frequency) {
