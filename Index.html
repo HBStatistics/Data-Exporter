@@ -204,24 +204,13 @@
 
         .toolbar {
             display: grid;
-            grid-template-columns: minmax(0, 1fr) repeat(2, minmax(160px, auto)) minmax(220px, auto) minmax(160px, auto);
+            grid-template-columns: minmax(0, 1fr) repeat(4, minmax(160px, auto));
             align-items: end;
             gap: 12px;
         }
 
         .toolbar .field {
             min-width: 0;
-        }
-
-        .toolbar-actions {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            align-items: end;
-        }
-
-        .toolbar-actions button {
-            width: 100%;
         }
 
         .status {
@@ -458,6 +447,12 @@
                 <p class="section-heading">Download CSV</p>
                 <div class="toolbar">
                     <p id="status" class="status">Ready.</p>
+                    <div class="field inline-toggle">
+                        <label class="toggle" for="estimate-subscribers">
+                            <input id="estimate-subscribers" type="checkbox">
+                            <span>Linear estimate subscribers after 09/17/2019</span>
+                        </label>
+                    </div>
                     <div class="field">
                         <label for="download-layout">Layout</label>
                         <select id="download-layout">
@@ -474,15 +469,7 @@
                             <option value="hourly">Hourly</option>
                         </select>
                     </div>
-                    <div class="field inline-toggle">
-                        <label class="toggle" for="estimate-subscribers">
-                            <input id="estimate-subscribers" type="checkbox">
-                            <span>Linear estimate subscribers after 09/17/2019</span>
-                        </label>
-                    </div>
-                    <div class="toolbar-actions">
-                        <button id="download-button" class="secondary" type="button" disabled>Download CSV</button>
-                    </div>
+                    <button id="download-button" class="secondary" type="button" disabled>Download CSV</button>
                 </div>
             </div>
 
@@ -1163,10 +1150,7 @@
         });
 
         window.addEventListener("load", () => {
-            if (!channelIdInput.value) {
-                channelIdInput.value = getRandomChannelId();
-            }
-
+            channelIdInput.value = getRandomChannelId();
             form.requestSubmit();
         });
 
