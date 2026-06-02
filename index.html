@@ -279,7 +279,6 @@
             letter-spacing: -0.02em;
         }
 
-        .chart-card,
         .table-card {
             background: var(--panel-strong);
             border: 1px solid rgba(96, 165, 250, 0.12);
@@ -288,30 +287,40 @@
             box-shadow: 0 8px 20px rgba(2, 8, 23, 0.24);
         }
 
+        .chart-card {
+            background: #2f2f2f;
+            border: 1px solid #464646;
+            border-radius: 8px;
+            padding: 26px 24px 24px;
+            box-shadow: none;
+        }
+
         .chart-card small {
             display: block;
-            color: var(--muted);
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
+            color: #ffffff;
+            text-align: center;
+            text-transform: none;
+            letter-spacing: 0;
+            font-size: 1.35rem;
+            line-height: 1.2;
             font-weight: 700;
-            margin-bottom: 10px;
+            margin-bottom: 18px;
         }
 
         .charts-grid {
             display: grid;
-            grid-template-columns: repeat(3, minmax(0, 1fr));
+            grid-template-columns: 1fr;
             gap: 22px;
             margin-top: 28px;
         }
 
         .chart-shell {
             position: relative;
-            height: 320px;
-            margin-top: 14px;
-            border-radius: 12px;
-            background: linear-gradient(180deg, #14213a 0%, #10192d 100%);
-            border: 1px solid rgba(96, 165, 250, 0.12);
-            padding: 8px;
+            height: 420px;
+            border-radius: 0;
+            background: #2f2f2f;
+            border: 0;
+            padding: 0;
         }
 
         .chart-shell svg {
@@ -326,9 +335,9 @@
             max-width: 220px;
             padding: 10px 12px;
             border-radius: 10px;
-            background: rgba(17, 17, 17, 0.94);
+            background: rgba(22, 22, 22, 0.96);
             color: #ffffff;
-            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.18);
+            box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
             font-size: 0.9rem;
             line-height: 1.35;
             pointer-events: none;
@@ -446,7 +455,7 @@
             <p class="eyebrow">YouTube Analytics</p>
             <h1>Channel stats, charts, and CSV export.</h1>
             <p>
-                Enter any YouTube channel ID, fetch its historical data from vidIQ
+                Enter any YouTube channel ID, fetch its historical data from Vidiq.
             </p>
         </section>
 
@@ -565,9 +574,9 @@
         };
 
         const chartColors = {
-            subscribers: "#0f766e",
-            views: "#c2410c",
-            videos: "#1d4ed8"
+            subscribers: "#2f74ff",
+            views: "#2f74ff",
+            videos: "#2f74ff"
         };
         const DEFAULT_FROM_DATE = "2005-04-01";
         const SUBSCRIBER_ESTIMATE_START = new Date("2019-09-17T00:00:00Z").getTime();
@@ -1097,15 +1106,19 @@
             setStatus("Fetching channel data...");
 
             try {
-                const url = new URL("https://api.vidiq.com/youtube/channels/public/stats");
-                url.searchParams.set("ids", channelIds.join(","));
-                url.searchParams.set("from", fromDate);
-                url.searchParams.set("to", toDate);
-                url.searchParams.set("interpolate", "true");
+                const vidiqUrl = new URL("https://api.vidiq.com/youtube/channels/public/stats");
+                vidiqUrl.searchParams.set("ids", channelIds.join(","));
+                vidiqUrl.searchParams.set("from", fromDate);
+                vidiqUrl.searchParams.set("to", toDate);
+                vidiqUrl.searchParams.set("interpolate", "true");
 
-                const response = await fetch(url.toString());
+                const proxyUrl = new URL("https://api.codetabs.com/v1/proxy");
+                proxyUrl.searchParams.set("quest", vidiqUrl.toString());
+
+                const response = await fetch(proxyUrl.toString());
                 if (!response.ok) {
-                    throw new Error("API request failed with status " + response.status);
+                    const errorPayload = await response.json().catch(() => null);
+                    throw new Error(errorPayload?.error || "API request failed with status " + response.status);
                 }
 
                 const payload = await response.json();
@@ -1154,7 +1167,7 @@
 
             const frequency = downloadFrequencySelect.value || "monthly";
             const layout = downloadLayoutSelect.value || "vertical";
-            const exportRawStats = resampleStats(attachSubscriberSeries(latestRawStats), frequency);
+            const exportRawStats = resampleStats(attachMetricSeries(latestRawStats), frequency);
             const exportStats = addDailyGainFields(
                 buildExportEstimatedStats(exportRawStats),
                 "estimated_subscribers",
@@ -1242,7 +1255,7 @@
         }
 
         function getProcessedStats(stats) {
-            const withSeries = attachSubscriberSeries(stats);
+            const withSeries = attachMetricSeries(stats);
             if (!estimateSubscribersInput.checked) {
                 return withSeries;
             }
@@ -1251,7 +1264,7 @@
         }
 
         function renderLineChart(target, stats, metric, stroke) {
-            const data = downsample(stats, 220).map((entry) => ({
+            const data = stats.map((entry) => ({
                 x: new Date(entry.recorded_at).getTime(),
                 y: Number(getMetricValue(entry, metric)) || 0,
                 recordedAt: entry.recorded_at
@@ -1262,14 +1275,14 @@
                 return;
             }
 
-            const width = 760;
-            const height = 320;
-            const padding = { top: 18, right: 16, bottom: 34, left: 20 };
+            const width = 1600;
+            const height = 420;
+            const padding = { top: 10, right: 14, bottom: 54, left: 72 };
             const xMin = data[0].x;
             const xMax = data[data.length - 1].x;
             const yValues = data.map((point) => point.y);
-            const yMin = Math.min(...yValues);
-            const yMax = Math.max(...yValues);
+            const yMin = 0;
+            const yMax = getNiceAxisMax(Math.max(...yValues));
             const yRange = yMax - yMin || 1;
 
             const toX = (value) => {
@@ -1290,30 +1303,32 @@
                 `${toX(data[data.length - 1].x).toFixed(1)},${height - padding.bottom}`
             ].join(" ");
 
-            const yTicks = [0, 0.5, 1].map((ratio) => {
+            const yTicks = [0, 0.2, 0.4, 0.6, 0.8, 1].map((ratio) => {
                 const value = yMax - yRange * ratio;
                 const y = padding.top + (height - padding.top - padding.bottom) * ratio;
                 return { value, y };
             });
+            const xTicks = getDateTicks(xMin, xMax, 10);
 
             target.innerHTML = `
                 <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="${metric} chart">
                     <defs>
                         <linearGradient id="${metric}-fill" x1="0" x2="0" y1="0" y2="1">
-                            <stop offset="0%" stop-color="${stroke}" stop-opacity="0.28"></stop>
-                            <stop offset="100%" stop-color="${stroke}" stop-opacity="0.03"></stop>
+                            <stop offset="0%" stop-color="${stroke}" stop-opacity="0.26"></stop>
+                            <stop offset="100%" stop-color="${stroke}" stop-opacity="0.05"></stop>
                         </linearGradient>
                     </defs>
                     ${yTicks.map((tick) => `
-                        <line x1="${padding.left}" x2="${width - padding.right}" y1="${tick.y}" y2="${tick.y}" stroke="rgba(0,0,0,0.08)" stroke-dasharray="4 6"></line>
-                        <text x="${padding.left}" y="${tick.y - 6}" fill="#696455" font-size="11">${escapeHtml(formatCompact(Math.round(tick.value)))}</text>
+                        <line x1="${padding.left}" x2="${width - padding.right}" y1="${tick.y.toFixed(1)}" y2="${tick.y.toFixed(1)}" stroke="rgba(255,255,255,0.075)" stroke-width="1"></line>
+                        <text x="${padding.left - 18}" y="${tick.y + 4}" text-anchor="end" fill="#ffffff" font-size="15" font-weight="700">${escapeHtml(formatAxisNumber(tick.value))}</text>
+                    `).join("")}
+                    ${xTicks.map((tick) => `
+                        <text x="${toX(tick).toFixed(1)}" y="${height - 20}" text-anchor="middle" fill="#ffffff" font-size="15" font-weight="700">${escapeHtml(formatAxisDate(tick))}</text>
                     `).join("")}
                     <polyline fill="url(#${metric}-fill)" stroke="none" points="${areaPoints}"></polyline>
-                    <polyline fill="none" stroke="${stroke}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" points="${points}"></polyline>
+                    <polyline fill="none" stroke="${stroke}" stroke-width="2.5" stroke-linecap="butt" stroke-linejoin="round" points="${points}"></polyline>
                     <line data-hover-line x1="${padding.left}" x2="${padding.left}" y1="${padding.top}" y2="${height - padding.bottom}" stroke="${stroke}" stroke-width="1.5" stroke-dasharray="5 5" opacity="0"></line>
                     <circle data-hover-dot cx="${toX(data[data.length - 1].x)}" cy="${toY(data[data.length - 1].y)}" r="5" fill="${stroke}" stroke="#ffffff" stroke-width="2.5" opacity="0"></circle>
-                    <text x="${padding.left}" y="${height - 8}" fill="#696455" font-size="11">${escapeHtml(formatShortDate(data[0].x))}</text>
-                    <text x="${width - padding.right}" y="${height - 8}" text-anchor="end" fill="#696455" font-size="11">${escapeHtml(formatShortDate(data[data.length - 1].x))}</text>
                     <rect data-hitbox x="${padding.left}" y="${padding.top}" width="${width - padding.left - padding.right}" height="${height - padding.top - padding.bottom}" fill="transparent" style="cursor: crosshair;"></rect>
                 </svg>
                 <div class="chart-tooltip" data-tooltip></div>
@@ -1428,6 +1443,7 @@
                     "original_daily_gain",
                     "estimated_subscribers",
                     "estimated_daily_gain",
+                    "original_views",
                     "views",
                     "videos"
                 ]
@@ -1441,7 +1457,8 @@
                     rawEntry.original_daily_gain ?? "",
                     entry.estimated_subscribers ?? entry.original_subscribers ?? entry.subscribers ?? "",
                     entry.estimated_daily_gain ?? "",
-                    entry.views ?? "",
+                    rawEntry.original_views ?? rawEntry.views ?? "",
+                    entry.views ?? entry.estimated_views ?? "",
                     entry.videos ?? ""
                 ]);
             });
@@ -1466,7 +1483,7 @@
         function buildCombinedMetricRows(channelEntries, frequency, metric) {
             const processedEntries = channelEntries
                 .map((channelEntry) => {
-                    const resampledStats = resampleStats(attachSubscriberSeries(channelEntry.stats), frequency);
+                    const resampledStats = resampleStats(attachMetricSeries(channelEntry.stats), frequency);
                     const stats = metric === "subscribers"
                         ? getCombinedSubscriberStats(resampledStats)
                         : getCombinedMetricStats(resampledStats, metric);
@@ -1573,6 +1590,7 @@
             const originalDailyGainRow = ["original_daily_gain"];
             const estimatedSubscribersRow = ["estimated_subscribers"];
             const estimatedDailyGainRow = ["estimated_daily_gain"];
+            const originalViewsRow = ["original_views"];
             const viewsRow = ["views"];
             const videosRow = ["videos"];
 
@@ -1583,7 +1601,8 @@
                 originalDailyGainRow.push(rawEntry.original_daily_gain ?? "");
                 estimatedSubscribersRow.push(entry.estimated_subscribers ?? entry.original_subscribers ?? entry.subscribers ?? "");
                 estimatedDailyGainRow.push(entry.estimated_daily_gain ?? "");
-                viewsRow.push(entry.views ?? "");
+                originalViewsRow.push(rawEntry.original_views ?? rawEntry.views ?? "");
+                viewsRow.push(entry.views ?? entry.estimated_views ?? "");
                 videosRow.push(entry.videos ?? "");
             });
 
@@ -1593,6 +1612,7 @@
                 originalDailyGainRow,
                 estimatedSubscribersRow,
                 estimatedDailyGainRow,
+                originalViewsRow,
                 viewsRow,
                 videosRow
             ];
@@ -1608,12 +1628,41 @@
             return applySubscriberEstimationByStep(cloned);
         }
 
+        function attachMetricSeries(stats) {
+            return attachViewSeries(attachSubscriberSeries(stats));
+        }
+
         function attachSubscriberSeries(stats) {
             return stats.map((entry) => ({
                 ...entry,
                 original_subscribers: smoothSubscriberValue(Number(entry.subscribers) || 0, entry.recorded_at),
                 estimated_subscribers: smoothSubscriberValue(Number(entry.subscribers) || 0, entry.recorded_at)
             }));
+        }
+
+        function attachViewSeries(stats) {
+            const withSeries = stats.map((entry) => {
+                const viewValue = getFiniteMetricValue(entry.views);
+                const normalizedViews = viewValue ?? "";
+
+                return {
+                    ...entry,
+                    original_views: normalizedViews,
+                    estimated_views: normalizedViews,
+                    views: normalizedViews
+                };
+            });
+
+            return applyViewEstimation(withSeries);
+        }
+
+        function getFiniteMetricValue(value) {
+            if (value === null || value === undefined || value === "") {
+                return null;
+            }
+
+            const numericValue = Number(value);
+            return Number.isFinite(numericValue) ? numericValue : null;
         }
 
         function smoothSubscriberValue(value, recordedAt) {
@@ -1738,6 +1787,58 @@
                 stats[index].estimated_subscribers = Math.round(
                     startValue + delta * progress
                 );
+            }
+        }
+
+        function applyViewEstimation(stats) {
+            if (stats.length < 2) {
+                return stats;
+            }
+
+            let anchorStart = -1;
+
+            for (let index = 0; index < stats.length; index += 1) {
+                const currentValue = getFiniteMetricValue(stats[index].original_views);
+                if (currentValue === null) {
+                    continue;
+                }
+
+                stats[index].estimated_views = currentValue;
+                stats[index].views = currentValue;
+
+                if (anchorStart !== -1) {
+                    interpolateViewSegment(stats, anchorStart, index);
+                }
+
+                anchorStart = index;
+            }
+
+            return stats;
+        }
+
+        function interpolateViewSegment(stats, startIndex, endIndex) {
+            if (endIndex - startIndex <= 1) {
+                return;
+            }
+
+            const startEntry = stats[startIndex];
+            const endEntry = stats[endIndex];
+            const startValue = getFiniteMetricValue(startEntry.original_views);
+            const endValue = getFiniteMetricValue(endEntry.original_views);
+            const startTime = new Date(startEntry.recorded_at).getTime();
+            const endTime = new Date(endEntry.recorded_at).getTime();
+            const totalDuration = endTime - startTime;
+
+            if (startValue === null || endValue === null || totalDuration <= 0) {
+                return;
+            }
+
+            for (let index = startIndex + 1; index < endIndex; index += 1) {
+                const currentTime = new Date(stats[index].recorded_at).getTime();
+                const ratio = (currentTime - startTime) / totalDuration;
+                const estimatedValue = Math.round(startValue + (endValue - startValue) * ratio);
+                stats[index].estimated_views = estimatedValue;
+                stats[index].views = estimatedValue;
             }
         }
 
@@ -1880,6 +1981,89 @@
                 notation: "compact",
                 maximumFractionDigits: 2
             }).format(Number(value) || 0);
+        }
+
+        function formatAxisNumber(value) {
+            const numericValue = Number(value) || 0;
+            if (numericValue >= 1000000000) {
+                return trimAxisNumber(numericValue / 1000000000) + "B";
+            }
+
+            if (numericValue >= 1000000) {
+                return trimAxisNumber(numericValue / 1000000) + "M";
+            }
+
+            if (numericValue >= 1000) {
+                return trimAxisNumber(numericValue / 1000) + "K";
+            }
+
+            return String(Math.round(numericValue));
+        }
+
+        function trimAxisNumber(value) {
+            return Number.isInteger(value) ? String(value) : value.toFixed(1).replace(/\.0$/, "");
+        }
+
+        function getNiceAxisMax(value) {
+            const numericValue = Number(value) || 0;
+            if (numericValue <= 0) {
+                return 1;
+            }
+
+            const candidates = [1, 2, 2.5, 5, 10];
+            let bestMax = Infinity;
+
+            for (let divisions = 5; divisions <= 8; divisions += 1) {
+                const roughStep = numericValue / divisions;
+                const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+
+                for (const candidate of candidates) {
+                    const axisMax = candidate * magnitude * divisions;
+                    if (axisMax >= numericValue * 1.03 && axisMax < bestMax) {
+                        bestMax = axisMax;
+                    }
+                }
+            }
+
+            return Number.isFinite(bestMax) ? bestMax : numericValue * 1.05;
+        }
+
+        function getDateTicks(startTime, endTime, maxTicks) {
+            if (endTime <= startTime) {
+                return [startTime];
+            }
+
+            const startDate = new Date(startTime);
+            const endDate = new Date(endTime);
+            const ticks = [];
+            const totalYears = endDate.getUTCFullYear() - startDate.getUTCFullYear();
+            const yearStep = Math.max(1, Math.ceil(totalYears / Math.max(1, maxTicks - 1)));
+            let year = startDate.getUTCFullYear();
+
+            for (; year <= endDate.getUTCFullYear(); year += yearStep) {
+                const tick = Date.UTC(year, 0, 1);
+                if (tick >= startTime && tick <= endTime) {
+                    ticks.push(tick);
+                }
+            }
+
+            if (!ticks.length || ticks[0] > startTime + 86400000 * 45) {
+                ticks.unshift(startTime);
+            }
+
+            if (ticks[ticks.length - 1] < endTime - 86400000 * 45) {
+                ticks.push(endTime);
+            }
+
+            return ticks.slice(0, maxTicks);
+        }
+
+        function formatAxisDate(value) {
+            return new Date(value).toLocaleDateString("en-US", {
+                year: "numeric",
+                month: "short",
+                day: "2-digit"
+            });
         }
 
         function formatNumber(value) {
