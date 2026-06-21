@@ -1316,31 +1316,7 @@
 
         async function fetchVidiqStats(vidiqUrl) {
             const targetUrl = vidiqUrl.toString();
-            let lastError = "No proxy returned Vidiq JSON.";
-
-            try {
-                const response = await fetch("https://proxy.corsfix.com/?url=" + encodeURIComponent(targetUrl));
-                const text = (await response.text()).trimStart();
-
-                if (response.ok) {
-                    const firstCharacter = text.charAt(0);
-
-                    if (firstCharacter === "[" || firstCharacter === "{") {
-                        return new Response(text, {
-                            status: 200,
-                            headers: { "Content-Type": "application/json" }
-                        });
-                    }
-
-                    lastError = "Corsfix did not return JSON.";
-                } else {
-                    lastError = getCorsfixErrorMessage(response.status, text);
-                }
-            } catch (error) {
-                lastError = "Corsfix failed: " + (error.message || "request failed.");
-            }
-
-            const corsfixError = lastError;
+            let lastError = "AllOrigins did not return Vidiq JSON.";
 
             for (let attempt = 1; attempt <= 2; attempt += 1) {
                 try {
@@ -1366,31 +1342,10 @@
                 }
             }
 
-            return new Response(JSON.stringify({ error: corsfixError + " AllOrigins fallback also failed: " + lastError }), {
+            return new Response(JSON.stringify({ error: lastError }), {
                 status: 200,
                 headers: { "Content-Type": "application/json" }
             });
-        }
-
-        function getCorsfixErrorMessage(status, text) {
-            try {
-                const payload = JSON.parse(text);
-                if (payload?.corsfix_error === "domain_not_registered") {
-                    return "Corsfix blocks this public GitHub Pages domain unless it is registered with Corsfix.";
-                }
-
-                if (payload?.corsfix_error === "trial_expired") {
-                    return "Corsfix only allows localhost for the free trial; the public GitHub Pages domain is blocked.";
-                }
-
-                if (payload?.message) {
-                    return "Corsfix returned status " + status + ": " + payload.message;
-                }
-            } catch (error) {
-                // Keep the generic status message below.
-            }
-
-            return "Corsfix returned status " + status + ".";
         }
 
         function loadAllOriginsJsonp(targetUrl) {
@@ -2378,3 +2333,4 @@
     </script>
 </body>
 </html>
+
