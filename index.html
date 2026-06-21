@@ -1316,7 +1316,26 @@
 
         async function fetchVidiqStats(vidiqUrl) {
             const targetUrl = vidiqUrl.toString();
-            let lastError = "AllOrigins did not return Vidiq JSON.";
+            let lastError = "No proxy returned Vidiq JSON.";
+
+            try {
+                const response = await fetch("https://proxy.corsfix.com/?url=" + encodeURIComponent(targetUrl));
+                const text = (await response.text()).trimStart();
+                const firstCharacter = text.charAt(0);
+
+                if (response.ok && (firstCharacter === "[" || firstCharacter === "{")) {
+                    return new Response(text, {
+                        status: 200,
+                        headers: { "Content-Type": "application/json" }
+                    });
+                }
+
+                lastError = response.ok
+                    ? "Corsfix did not return JSON."
+                    : "Corsfix returned status " + response.status + ".";
+            } catch (error) {
+                lastError = "Corsfix failed: " + (error.message || "request failed.");
+            }
 
             for (let attempt = 1; attempt <= 2; attempt += 1) {
                 try {
@@ -2333,4 +2352,3 @@
     </script>
 </body>
 </html>
-
