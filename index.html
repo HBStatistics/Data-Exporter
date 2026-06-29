@@ -1317,7 +1317,7 @@
         async function fetchVidiqStats(vidiqUrl) {
             const targetUrl = vidiqUrl.toString();
             let lastError = "No proxy returned Vidiq JSON.";
-            const response = await fetch("https://proxy.corsfix.com/?url=" + encodeURIComponent(targetUrl));
+            const response = await fetch("https://hbstatistics-proxy.hbstatistics1.workers.dev/?url=" + encodeURIComponent(targetUrl));
             const text = (await response.text()).trimStart();
             const firstCharacter = text.charAt(0);
 
