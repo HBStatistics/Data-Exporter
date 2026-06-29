@@ -1317,121 +1317,24 @@
         async function fetchVidiqStats(vidiqUrl) {
             const targetUrl = vidiqUrl.toString();
             let lastError = "No proxy returned Vidiq JSON.";
+            const response = await fetch("https://proxy.corsfix.com/?url=" + encodeURIComponent(targetUrl));
+            const text = (await response.text()).trimStart();
+            const firstCharacter = text.charAt(0);
 
-            const hostname = window.location.hostname.toLowerCase();
-            const corsProxyIoFreeOrigin =
-                !hostname ||
-                hostname === "localhost" ||
-                hostname === "127.0.0.1" ||
-                hostname.endsWith(".github.io") ||
-                /^10\./.test(hostname) ||
-                /^192\.168\./.test(hostname) ||
-                /^172\.(1[6-9]|2\d|3[01])\./.test(hostname);
-            const proxyUrls = corsProxyIoFreeOrigin
-                ? [
-                    {
-                        name: "CorsProxy",
-                        url: "https://corsproxy.io/?url=" + encodeURIComponent(targetUrl)
-                    },
-                    {
-                        name: "CORS.lol",
-                        url: "https://api.cors.lol/?url=" + encodeURIComponent(targetUrl)
-                    }
-                ]
-                : [
-                    {
-                        name: "CORS.lol",
-                        url: "https://api.cors.lol/?url=" + encodeURIComponent(targetUrl)
-                    }
-                ];
-
-            for (const proxy of proxyUrls) {
-                try {
-                    const response = await fetch(proxy.url);
-                    const text = (await response.text()).trimStart();
-                    const firstCharacter = text.charAt(0);
-
-                    if (response.ok && (firstCharacter === "[" || firstCharacter === "{")) {
-                        return new Response(text, {
-                            status: 200,
-                            headers: { "Content-Type": "application/json" }
-                        });
-                    }
-
-                    if (!response.ok) {
-                        lastError = proxy.name + " returned status " + response.status + ".";
-                        continue;
-                    }
-
-                    lastError = proxy.name + " did not return JSON.";
-                } catch (error) {
-                    lastError = proxy.name + " failed: " + (error.message || "request failed.");
-                }
+            if (response.ok && (firstCharacter === "[" || firstCharacter === "{")) {
+                return new Response(text, {
+                    status: 200,
+                    headers: { "Content-Type": "application/json" }
+                });
             }
 
-            const jsonpProxies = [
-                {
-                    name: "AllOrigins",
-                    url: "https://api.allorigins.win/get"
-                },
-                {
-                    name: "WhateverOrigin",
-                    url: "https://whateverorigin.org/get"
-                }
-            ];
-
-            for (const proxy of jsonpProxies) {
-                try {
-                    const payload = await loadProxyJsonp(proxy.url, targetUrl);
-                    const text = String(payload?.contents || "").trimStart();
-                    const firstCharacter = text.charAt(0);
-
-                    if (firstCharacter === "[" || firstCharacter === "{") {
-                        return new Response(text, {
-                            status: 200,
-                            headers: { "Content-Type": "application/json" }
-                        });
-                    }
-
-                    lastError = proxy.name + " did not return JSON.";
-                } catch (error) {
-                    lastError = proxy.name + " failed: " + (error.message || "request failed.");
-                }
-            }
+            lastError = response.ok
+                ? "Corsfix did not return JSON."
+                : "Corsfix returned status " + response.status + ".";
 
             return new Response(JSON.stringify({ error: lastError }), {
                 status: 200,
                 headers: { "Content-Type": "application/json" }
-            });
-        }
-
-        function loadProxyJsonp(proxyUrl, targetUrl) {
-            return new Promise((resolve, reject) => {
-                const callbackName = "__vidiqProxyCallback_" + Date.now() + "_" + Math.random().toString(36).slice(2);
-                const script = document.createElement("script");
-                const timeout = setTimeout(() => {
-                    cleanup();
-                    reject(new Error("JSONP proxy timed out."));
-                }, 20000);
-
-                function cleanup() {
-                    clearTimeout(timeout);
-                    script.remove();
-                    delete window[callbackName];
-                }
-
-                window[callbackName] = (payload) => {
-                    cleanup();
-                    resolve(payload);
-                };
-
-                script.onerror = () => {
-                    cleanup();
-                    reject(new Error("JSONP proxy failed to load."));
-                };
-
-                script.src = proxyUrl + "?callback=" + callbackName + "&url=" + encodeURIComponent(targetUrl);
-                document.head.appendChild(script);
             });
         }
 
