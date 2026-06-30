@@ -1315,30 +1315,17 @@
         });
 
         async function fetchVidiqStats(vidiqUrl) {
-            const targetUrl = vidiqUrl.toString();
-            let lastError = "No proxy returned Vidiq JSON.";
-            const response = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(targetUrl));
-            const text = (await response.text()).trimStart();
-            const firstCharacter = text.charAt(0);
-
-            if (response.ok && (firstCharacter === "[" || firstCharacter === "{")) {
-                return new Response(text, {
-                    status: 200,
-                    headers: { "Content-Type": "application/json" }
-                });
-            }
-
-            lastError = response.ok
-                ? "The proxy did not return JSON."
-                : "The proxy returned status " + response.status + ".";
-
-            return new Response(JSON.stringify({ error: lastError }), {
-                status: 200,
-                headers: { "Content-Type": "application/json" }
+            return fetch("/api/stats?url=" + encodeURIComponent(vidiqUrl.toString()), {
+                cache: "no-store"
             });
         }
 
         window.addEventListener("load", () => {
+            if (window.location.protocol === "file:") {
+                window.location.replace("http://127.0.0.1:8766/");
+                return;
+            }
+
             channelIdsInput.value = getRandomChannelId();
             form.requestSubmit();
         });
