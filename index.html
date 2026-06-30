@@ -1315,17 +1315,12 @@
         });
 
         async function fetchVidiqStats(vidiqUrl) {
-            return fetch("/api/stats?url=" + encodeURIComponent(vidiqUrl.toString()), {
+            return fetch("http://127.0.0.1:8766/api/stats?url=" + encodeURIComponent(vidiqUrl.toString()), {
                 cache: "no-store"
             });
         }
 
         window.addEventListener("load", () => {
-            if (window.location.protocol === "file:") {
-                window.location.replace("http://127.0.0.1:8766/");
-                return;
-            }
-
             channelIdsInput.value = getRandomChannelId();
             form.requestSubmit();
         });
