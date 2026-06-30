@@ -1317,7 +1317,7 @@
         async function fetchVidiqStats(vidiqUrl) {
             const targetUrl = vidiqUrl.toString();
             let lastError = "No proxy returned Vidiq JSON.";
-            const response = await fetch("https://hbstatistics-proxy.hbstatistics1.workers.dev/?url=" + encodeURIComponent(targetUrl));
+            const response = await fetch("https://api.allorigins.win/raw?url=" + encodeURIComponent(targetUrl));
             const text = (await response.text()).trimStart();
             const firstCharacter = text.charAt(0);
 
@@ -1329,8 +1329,8 @@
             }
 
             lastError = response.ok
-                ? "Corsfix did not return JSON."
-                : "Corsfix returned status " + response.status + ".";
+                ? "The proxy did not return JSON."
+                : "The proxy returned status " + response.status + ".";
 
             return new Response(JSON.stringify({ error: lastError }), {
                 status: 200,
