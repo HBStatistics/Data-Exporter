@@ -1316,7 +1316,7 @@
 
         async function fetchVidiqStats(vidiqUrl) {
             const proxyUrls = [
-                "https://proxy.corsfix.com/?url=" + encodeURIComponent(vidiqUrl.toString())
+                "https://proxy.2677929.xyz/" + vidiqUrl.toString()
             ];
 
             for (const proxyUrl of proxyUrls) {
@@ -1335,19 +1335,6 @@
                 }
             }
 
-            if (!isLongHistoricalRequest(vidiqUrl)) {
-                for (let attempt = 1; attempt <= 3; attempt += 1) {
-                    try {
-                        const response = await fetchAllOriginsStats(vidiqUrl, attempt);
-                        if (response.ok) {
-                            return response;
-                        }
-                    } catch (error) {
-                        await wait(700 * attempt);
-                    }
-                }
-            }
-
             throw new Error("The stats proxy failed after several retries. Try again in a minute.");
         }
 
@@ -1355,39 +1342,6 @@
             const requestUrl = new URL(url);
             requestUrl.searchParams.set("_retry", String(Date.now()) + "-" + attempt);
             return requestUrl.toString();
-        }
-
-        function isLongHistoricalRequest(vidiqUrl) {
-            const fromYear = Number((vidiqUrl.searchParams.get("from") || "").slice(0, 4));
-            const toYear = Number((vidiqUrl.searchParams.get("to") || "").slice(0, 4));
-            return Number.isFinite(fromYear) && Number.isFinite(toYear) && toYear - fromYear > 2;
-        }
-
-        async function fetchAllOriginsStats(vidiqUrl, attempt) {
-            const requestUrl = new URL(vidiqUrl.toString());
-            requestUrl.searchParams.set("_retry", String(Date.now()) + "-" + attempt);
-
-            const proxyUrl = new URL("https://api.allorigins.win/get");
-            proxyUrl.searchParams.set("url", requestUrl.toString());
-
-            const response = await fetch(proxyUrl.toString(), {
-                cache: "no-store"
-            });
-
-            if (!response.ok) {
-                return response;
-            }
-
-            const wrapper = await response.json();
-            const statusCode = Number(wrapper?.status?.http_code || 200);
-            const contents = typeof wrapper?.contents === "string" ? wrapper.contents : "";
-
-            return new Response(contents, {
-                status: statusCode,
-                headers: {
-                    "Content-Type": "application/json"
-                }
-            });
         }
 
         function wait(ms) {
