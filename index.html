@@ -1315,32 +1315,37 @@
         });
 
         async function fetchVidiqStats(vidiqUrl) {
-            const proxyBaseUrl = "https://proxy.2677929.xyz/";
-            let lastError = null;
+            const proxyUrls = [
+                "https://proxy.corsfix.com/?url=" + encodeURIComponent(vidiqUrl.toString()),
+                "https://proxy.2677929.xyz/" + vidiqUrl.toString()
+            ];
 
-            for (let attempt = 1; attempt <= 4; attempt += 1) {
-                try {
-                    const requestUrl = new URL(vidiqUrl.toString());
-                    requestUrl.searchParams.set("_retry", String(Date.now()) + "-" + attempt);
+            for (const proxyUrl of proxyUrls) {
+                for (let attempt = 1; attempt <= 2; attempt += 1) {
+                    try {
+                        const response = await fetch(addCacheBuster(proxyUrl, attempt), {
+                            cache: "no-store"
+                        });
 
-                    const response = await fetch(proxyBaseUrl + requestUrl.toString(), {
-                        cache: "no-store"
-                    });
+                        if (response.status === 403 || response.status === 429 || response.status >= 500) {
+                            await wait(700 * attempt);
+                            continue;
+                        }
 
-                    if (response.status === 502 || response.status === 503 || response.status === 504) {
-                        lastError = new Error("Stats proxy returned status " + response.status);
+                        return response;
+                    } catch (error) {
                         await wait(700 * attempt);
-                        continue;
                     }
-
-                    return response;
-                } catch (error) {
-                    lastError = error;
-                    await wait(700 * attempt);
                 }
             }
 
-            throw new Error("The stats proxy failed after several retries. The public HTTPS proxy is temporarily unreachable from this browser.");
+            throw new Error("The stats proxies failed after several retries. Try again in a minute.");
+        }
+
+        function addCacheBuster(url, attempt) {
+            const requestUrl = new URL(url);
+            requestUrl.searchParams.set("_retry", String(Date.now()) + "-" + attempt);
+            return requestUrl.toString();
         }
 
         function wait(ms) {
