@@ -1315,8 +1315,37 @@
         });
 
         async function fetchVidiqStats(vidiqUrl) {
-            return fetch("https://proxy.2677929.xyz/" + vidiqUrl.toString(), {
-                cache: "no-store"
+            const proxyBaseUrl = "https://proxy.2677929.xyz/";
+            let lastError = null;
+
+            for (let attempt = 1; attempt <= 4; attempt += 1) {
+                try {
+                    const requestUrl = new URL(vidiqUrl.toString());
+                    requestUrl.searchParams.set("_retry", String(Date.now()) + "-" + attempt);
+
+                    const response = await fetch(proxyBaseUrl + requestUrl.toString(), {
+                        cache: "no-store"
+                    });
+
+                    if (response.status === 502 || response.status === 503 || response.status === 504) {
+                        lastError = new Error("Stats proxy returned status " + response.status);
+                        await wait(700 * attempt);
+                        continue;
+                    }
+
+                    return response;
+                } catch (error) {
+                    lastError = error;
+                    await wait(700 * attempt);
+                }
+            }
+
+            throw new Error("The stats proxy failed after several retries. The public HTTPS proxy is temporarily unreachable from this browser.");
+        }
+
+        function wait(ms) {
+            return new Promise((resolve) => {
+                window.setTimeout(resolve, ms);
             });
         }
 
