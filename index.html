@@ -1315,43 +1315,17 @@
         });
 
         async function fetchVidiqStats(vidiqUrl) {
-            const proxyUrls = [
-                "https://proxy.2677929.xyz/" + vidiqUrl.toString()
-            ];
+            const proxyUrl = new URL("https://api.cors.lol/");
+            proxyUrl.searchParams.set("url", vidiqUrl.toString());
 
-            for (const proxyUrl of proxyUrls) {
-                for (let attempt = 1; attempt <= 2; attempt += 1) {
-                    try {
-                        const response = await fetch(addCacheBuster(proxyUrl, attempt), {
-                            cache: "no-store"
-                        });
-
-                        if (response.ok) {
-                            return response;
-                        }
-                    } catch (error) {
-                        await wait(700 * attempt);
-                    }
-                }
-            }
-
-            throw new Error("The stats proxy failed after several retries. Try again in a minute.");
-        }
-
-        function addCacheBuster(url, attempt) {
-            const requestUrl = new URL(url);
-            requestUrl.searchParams.set("_retry", String(Date.now()) + "-" + attempt);
-            return requestUrl.toString();
-        }
-
-        function wait(ms) {
-            return new Promise((resolve) => {
-                window.setTimeout(resolve, ms);
+            return fetch(proxyUrl.toString(), {
+                cache: "no-store"
             });
         }
 
         window.addEventListener("load", () => {
             channelIdsInput.value = getRandomChannelId();
+            form.requestSubmit();
         });
 
         clearStatus();
