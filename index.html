@@ -49,6 +49,30 @@
             box-shadow: var(--shadow);
         }
 
+        .data-warning {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 18px;
+            padding: 14px 16px;
+            color: #fee2e2;
+            background: rgba(127, 29, 29, 0.72);
+            border: 1px solid rgba(248, 113, 113, 0.55);
+            border-radius: 12px;
+            box-shadow: 0 12px 28px rgba(2, 8, 23, 0.24);
+        }
+
+        .data-warning-icon {
+            font-size: 1.25rem;
+            line-height: 1.2;
+        }
+
+        .data-warning p {
+            margin: 0;
+            color: inherit;
+            line-height: 1.45;
+        }
+
         .hero {
             padding: 28px;
             margin-bottom: 18px;
@@ -511,11 +535,16 @@
 </head>
 <body>
     <main class="page">
+        <aside class="data-warning" role="alert">
+            <span class="data-warning-icon" aria-hidden="true">&#9888;</span>
+            <p><strong>Data warning:</strong> Due to the recent vidIQ API change, the data exporter has temporarily lost access to a large amount of data. We are working to recover as much data as possible. Unfortunately, due to lack of snapshots, some historical data may be unavailable or less accurate.</p>
+        </aside>
+
         <section class="hero">
             <p class="eyebrow">YouTube Analytics</p>
             <h1>Channel stats, charts, and CSV export.</h1>
             <p>
-                Enter any YouTube channel ID, fetch its historical data from Vidiq.
+                Enter any YouTube channel ID, fetch its historical data from vidIQ.
             </p>
         </section>
 
@@ -647,7 +676,6 @@
             videos: "#2f74ff"
         };
         const DEFAULT_FROM_DATE = "2005-04-01";
-        const RESPONSE_CACHE_KEY = "youtube-stats-explorer-last-response";
         const SUBSCRIBER_ESTIMATE_START = new Date("2019-09-17T00:00:00Z").getTime();
         let currentChartMode = "total";
         let latestChannels = [];
@@ -1316,61 +1344,17 @@
         });
 
         async function fetchVidiqStats(vidiqUrl) {
-            const cachedResponse = getCachedStatsResponse(vidiqUrl);
-            if (cachedResponse) {
-                return cachedResponse;
-            }
-
-            const proxyUrl = new URL("https://api.cors.lol/");
-            proxyUrl.searchParams.set("url", vidiqUrl.toString());
-
-            const response = await fetch(proxyUrl.toString(), {
+            return fetch("https://proxy.2677929.xyz/" + vidiqUrl.toString(), {
                 cache: "no-store"
             });
-
-            if (response.ok) {
-                const responseText = await response.clone().text();
-                cacheStatsResponse(vidiqUrl, responseText);
-            }
-
-            return response;
         }
 
         window.addEventListener("load", () => {
             channelIdsInput.value = getRandomChannelId();
+            form.requestSubmit();
         });
 
         clearStatus();
-
-        function getCachedStatsResponse(vidiqUrl) {
-            try {
-                const cached = JSON.parse(localStorage.getItem(RESPONSE_CACHE_KEY) || "null");
-                if (!cached || cached.url !== vidiqUrl.toString() || !cached.body) {
-                    return null;
-                }
-
-                return new Response(cached.body, {
-                    status: 200,
-                    headers: {
-                        "Content-Type": "application/json"
-                    }
-                });
-            } catch (error) {
-                return null;
-            }
-        }
-
-        function cacheStatsResponse(vidiqUrl, body) {
-            try {
-                localStorage.setItem(RESPONSE_CACHE_KEY, JSON.stringify({
-                    url: vidiqUrl.toString(),
-                    body,
-                    cached_at: new Date().toISOString()
-                }));
-            } catch (error) {
-                localStorage.removeItem(RESPONSE_CACHE_KEY);
-            }
-        }
 
         function renderChannel(channel, stats) {
             channelTitleEl.textContent = channel.title || channel.id || "Unknown Channel";
