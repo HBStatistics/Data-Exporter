@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <link rel="icon" href="https://yt3.ggpht.com/veDA1FfRTsN5P5U97lgW9TRP4u0FnGRQIphD1DQs5TRvoHqZHU4xizu0UxIx5GMdnvKa8mkxQzw=s192-c-k-c0x00ffffff-no-rj">
-    <title>YouTube Channel Stats Explorer</title>
+    <title>YouTube Channel Data Exporter</title>
     <style>
         :root {
             --bg: #0f172a;
@@ -444,6 +444,7 @@
             background: #14213a;
         }
 
+
         table {
             width: 100%;
             border-collapse: collapse;
@@ -530,6 +531,7 @@
             .meta {
                 grid-template-columns: 1fr;
             }
+
         }
     </style>
 </head>
@@ -537,14 +539,14 @@
     <main class="page">
         <aside class="data-warning" role="alert">
             <span class="data-warning-icon" aria-hidden="true">&#9888;</span>
-            <p><strong>Data warning:</strong> Due to the recent vidIQ API change, the data exporter has temporarily lost access to a large amount of data. We are working to recover as much data as possible. Unfortunately, due to lack of snapshots, some historical data may be unavailable or less accurate.</p>
+            <p><strong>Data warning:</strong> Due to the recent vidIQ API change, the Data Exporter has temporarily lost access to a large amount of data. Some channels have already been restored from archived datasets and other historical sources. However, many channels are still being recovered. Due to a lack of snapshots, some data may be unavailable or less accurate.
         </aside>
 
         <section class="hero">
             <p class="eyebrow">YouTube Analytics</p>
             <h1>Channel stats, charts, and CSV export.</h1>
             <p>
-                Enter any YouTube channel ID, fetch its historical data from vidIQ.
+                Enter any YouTube channel ID, fetch its historical data from multiple sources.
             </p>
         </section>
 
@@ -676,6 +678,11 @@
             videos: "#2f74ff"
         };
         const DEFAULT_FROM_DATE = "2005-04-01";
+        const TRACKY_API_BASE = "https://tracky-api.sctools.org/";
+        const WAYBACK_CDX_URL = "https://web.archive.org/cdx/search/cdx";
+        const CORS_PROXY_URL = "https://proxy.2677929.xyz/";
+        const WAYBACK_COOLDOWN_KEY = "wayback-proxy-cooldown-until";
+        let waybackProxyUnavailable = Number(sessionStorage.getItem(WAYBACK_COOLDOWN_KEY)) > Date.now();
         const SUBSCRIBER_ESTIMATE_START = new Date("2019-09-17T00:00:00Z").getTime();
         let currentChartMode = "total";
         let latestChannels = [];
@@ -1223,7 +1230,7 @@
                 }
 
                 const channels = Array.isArray(payload) ? payload : (payload ? [payload] : []);
-                const normalizedChannels = channels
+                const vidiqChannels = channels
                     .filter((channel) => channel && Array.isArray(channel.stats) && channel.stats.length > 0)
                     .map((channel) => ({
                         ...channel,
@@ -1232,9 +1239,13 @@
                             .sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at))
                     }));
 
-                if (!normalizedChannels.length) {
+                if (!vidiqChannels.length) {
                     throw new Error("No stats were returned for the provided channel IDs and date range.");
                 }
+
+                const normalizedChannels = await Promise.all(
+                    vidiqChannels.map((channel) => addAutomaticFallbackStats(channel, fromDate, toDate))
+                );
 
                 latestChannels = normalizedChannels;
                 latestChannel = normalizedChannels[0];
@@ -1344,9 +1355,920 @@
         });
 
         async function fetchVidiqStats(vidiqUrl) {
-            return fetch("https://proxy.2677929.xyz/" + vidiqUrl.toString(), {
+            return fetch(CORS_PROXY_URL + vidiqUrl.toString(), {
                 cache: "no-store"
             });
+        }
+
+        async function fetchWaybackResource(targetUrl, options = {}) {
+            if (waybackProxyUnavailable) {
+                throw new Error("Wayback proxy is temporarily unavailable.");
+            }
+
+            try {
+                const response = await fetch(CORS_PROXY_URL + targetUrl, options);
+                if (response.status === 429) {
+                    disableWaybackTemporarily();
+                }
+                return response;
+            } catch (error) {
+                disableWaybackTemporarily();
+                throw error;
+            }
+        }
+
+        function disableWaybackTemporarily() {
+            waybackProxyUnavailable = true;
+            sessionStorage.setItem(WAYBACK_COOLDOWN_KEY, String(Date.now() + 5 * 60 * 1000));
+        }
+
+        async function fetchArchivedComparisons(identifier) {
+            const cdxUrl = new URL(WAYBACK_CDX_URL);
+            const escapedIdentifier = escapeRegex(identifier);
+
+            cdxUrl.searchParams.set("url", "socialblade.com/youtube/compare/" + identifier + "*");
+            cdxUrl.searchParams.set("output", "json");
+            cdxUrl.searchParams.set("fl", "timestamp,original");
+            cdxUrl.searchParams.append("filter", "statuscode:200");
+            cdxUrl.searchParams.append(
+                "filter",
+                "original:(?i).*/youtube/compare/" + escapedIdentifier + "(/.*)?$"
+            );
+            cdxUrl.searchParams.set("collapse", "urlkey");
+            cdxUrl.searchParams.set("limit", "250");
+
+            const response = await fetchWaybackResource(cdxUrl.toString(), {
+                cache: "no-store"
+            });
+
+            if (!response.ok) {
+                throw new Error("Wayback returned status " + response.status + ".");
+            }
+
+            const payload = await response.json();
+            if (!Array.isArray(payload) || payload.length < 2) {
+                return [];
+            }
+
+            const discovered = payload.slice(1)
+                .filter((row) => Array.isArray(row) && row.length >= 2)
+                .map((row) => ({ timestamp: String(row[0]), original: String(row[1]) }));
+
+            const uniqueUrls = Array.from(new Set(discovered.map((entry) => entry.original))).slice(0, 5);
+            const captureGroups = await Promise.allSettled(uniqueUrls.map(fetchWaybackCaptures));
+            const captures = captureGroups
+                .filter((result) => result.status === "fulfilled")
+                .flatMap((result) => result.value);
+
+            return captures.length ? captures : discovered;
+        }
+
+        async function fetchWaybackCaptures(originalUrl, includeLatest = false) {
+            const cdxUrl = new URL(WAYBACK_CDX_URL);
+            cdxUrl.searchParams.set("url", originalUrl);
+            cdxUrl.searchParams.set("output", "json");
+            cdxUrl.searchParams.set("fl", "timestamp,original");
+            cdxUrl.searchParams.append("filter", "statuscode:200");
+            cdxUrl.searchParams.set("collapse", "digest");
+            cdxUrl.searchParams.set("limit", includeLatest ? "-250" : "250");
+
+            const response = await fetchWaybackResource(cdxUrl.toString(), {
+                cache: "no-store"
+            });
+            if (!response.ok) {
+                throw new Error("Capture lookup failed with status " + response.status + ".");
+            }
+
+            const payload = await response.json();
+            const unique = new Map();
+
+            if (Array.isArray(payload)) {
+                payload.slice(1)
+                    .filter((row) => Array.isArray(row) && row.length >= 2)
+                    .forEach((row) => {
+                        const entry = { timestamp: String(row[0]), original: String(row[1]) };
+                        unique.set(entry.timestamp + "|" + entry.original, entry);
+                    });
+            }
+
+            return Array.from(unique.values())
+                .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+        }
+
+        function escapeRegex(value) {
+            return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        }
+
+        async function addAutomaticFallbackStats(channel, fromDate, toDate) {
+            if (!channel?.id || !Array.isArray(channel.stats)) {
+                return channel;
+            }
+
+            const importedVidiqStats = await fetchImportedVidiqStats(channel, fromDate, toDate);
+            if (importedVidiqStats.length) {
+                return {
+                    ...channel,
+                    stats: mergeStatsBySourcePriority(
+                        channel.stats,
+                        importedVidiqStats,
+                        [],
+                        [],
+                        []
+                    )
+                };
+            }
+
+            let trackyPayload = null;
+            try {
+                const response = await fetch(TRACKY_API_BASE + encodeURIComponent(channel.id), {
+                    cache: "no-store"
+                });
+
+                if (response.ok) {
+                    trackyPayload = await response.json();
+                }
+            } catch (error) {
+                console.warn("Tracky fallback was unavailable for " + channel.id, error);
+            }
+
+            const trackyStats = normalizeTrackyHistory(trackyPayload?.history, fromDate, toDate);
+            let communitricsStats = [];
+            let socialBladeStats = [];
+
+            try {
+                communitricsStats = await fetchCommunitricsArchiveStats(
+                    channel.id,
+                    fromDate,
+                    toDate
+                );
+            } catch (error) {
+                console.warn("Archived Communitrics data was unavailable for " + channel.id, error);
+            }
+
+            try {
+                socialBladeStats = await fetchSocialBladeArchiveStats(
+                    channel,
+                    trackyPayload?.info,
+                    fromDate,
+                    toDate
+                );
+            } catch (error) {
+                console.warn("Archived Social Blade data was unavailable for " + channel.id, error);
+            }
+
+            return {
+                ...channel,
+                stats: mergeStatsBySourcePriority(
+                    channel.stats,
+                    [],
+                    communitricsStats,
+                    socialBladeStats,
+                    trackyStats
+                )
+            };
+        }
+
+        async function fetchImportedVidiqStats(channel, fromDate, toDate) {
+            const safeTitle = String(channel?.title || "")
+                .replace(/[^\w-]+/g, "_")
+                .replace(/^_+|_+$/g, "");
+            const bases = [
+                safeTitle ? safeTitle + "_daily_horizontal_stats" : "",
+                safeTitle ? safeTitle + "_daily_vertical_stats" : "",
+                channel?.id ? String(channel.id) + "_daily" : ""
+            ].filter(Boolean);
+            const filenames = bases.flatMap((base) => [
+                base + ".csv",
+                ...Array.from({ length: 6 }, (_, index) => base + " (" + (index + 1) + ").csv")
+            ]);
+            const loaded = await Promise.all(filenames.map(async (filename) => {
+                try {
+                    const response = await fetch("Data/" + encodeURIComponent(filename), { cache: "no-store" });
+                    if (!response.ok) {
+                        return [];
+                    }
+                    return normalizeImportedVidiqCsv(await response.text(), fromDate, toDate);
+                } catch (error) {
+                    return [];
+                }
+            }));
+
+            return mergeImportedVidiqDatasets(loaded.filter((stats) => stats.length));
+        }
+
+        function normalizeImportedVidiqCsv(csvText, fromDate, toDate) {
+            const rows = csvText.replace(/^\uFEFF/, "").split(/\r?\n/)
+                .filter((line) => line.length)
+                .map(parseCsvLine);
+            if (rows.length < 2) {
+                return [];
+            }
+
+            if (rows[0][0] === "Date") {
+                return normalizeLegacyImportedVidiqRows(rows, fromDate, toDate);
+            }
+
+            if (rows[0][0] === "recorded_at") {
+                const headers = rows[0].map((header) => String(header).toLowerCase());
+                return rows.slice(1).map((row) => makeImportedVidiqEntry(
+                    row[0],
+                    row[headers.indexOf("original_subscribers")] || row[headers.indexOf("estimated_subscribers")],
+                    row[headers.indexOf("original_views")] || row[headers.indexOf("views")],
+                    row[headers.indexOf("videos")],
+                    fromDate,
+                    toDate
+                )).filter(Boolean);
+            }
+
+            if (rows[0][0] !== "metric") {
+                return [];
+            }
+
+            const metrics = new Map(rows.slice(1).map((row) => [row[0], row]));
+            const subscribers = metrics.get("original_subscribers") || metrics.get("raw_subscribers") ||
+                metrics.get("subscribers") || metrics.get("estimated_subscribers") || [];
+            const views = metrics.get("original_views") || metrics.get("raw_views") || metrics.get("views") || [];
+            const videos = metrics.get("videos") || [];
+
+            return rows[0].slice(1).map((recordedAt, index) => makeImportedVidiqEntry(
+                recordedAt,
+                subscribers[index + 1],
+                views[index + 1],
+                videos[index + 1],
+                fromDate,
+                toDate
+            )).filter(Boolean);
+        }
+
+        function normalizeLegacyImportedVidiqRows(rows, fromDate, toDate) {
+            const secondCell = String(rows[0][1] || "").toLowerCase();
+            if (["subscribers", "views", "videos"].includes(secondCell)) {
+                const headers = rows[0].map((header) => String(header).toLowerCase());
+                return rows.slice(1).map((row) => makeImportedVidiqEntry(
+                    row[0],
+                    row[headers.indexOf("subscribers")],
+                    row[headers.indexOf("views")],
+                    row[headers.indexOf("videos")],
+                    fromDate,
+                    toDate
+                )).filter(Boolean);
+            }
+
+            const metrics = new Map(rows.slice(1).map((row) => [String(row[0]).toLowerCase(), row]));
+            const subscribers = metrics.get("subscribers") || [];
+            const views = metrics.get("views") || [];
+            const videos = metrics.get("videos") || [];
+            return rows[0].slice(1).map((recordedAt, index) => makeImportedVidiqEntry(
+                recordedAt,
+                subscribers[index + 1],
+                views[index + 1],
+                videos[index + 1],
+                fromDate,
+                toDate
+            )).filter(Boolean);
+        }
+
+        function makeImportedVidiqEntry(recordedAt, subscribers, views, videos, fromDate, toDate) {
+            const recordedTime = new Date(recordedAt).getTime();
+            const fromTime = Date.parse(fromDate + "T00:00:00.000Z");
+            const toTime = Date.parse(toDate + "T23:59:59.999Z");
+            if (!Number.isFinite(recordedTime) || recordedTime < fromTime || recordedTime > toTime) {
+                return null;
+            }
+            const entry = {
+                recorded_at: new Date(recordedTime).toISOString(),
+                subscribers: parseImportedNumber(subscribers),
+                views: parseImportedNumber(views),
+                videos: parseImportedNumber(videos),
+                data_source: "vidiq_imported"
+            };
+            return entry.subscribers !== "" || entry.views !== "" || entry.videos !== "" ? entry : null;
+        }
+
+        function mergeImportedVidiqDatasets(datasets) {
+            const byDay = new Map();
+            datasets.slice().sort((left, right) => {
+                const leftEnd = new Date(left[left.length - 1].recorded_at).getTime();
+                const rightEnd = new Date(right[right.length - 1].recorded_at).getTime();
+                return leftEnd - rightEnd;
+            }).forEach((stats) => stats.forEach((entry) => {
+                const day = getUtcDay(entry.recorded_at);
+                const previous = byDay.get(day) || {};
+                byDay.set(day, {
+                    ...previous,
+                    ...entry,
+                    subscribers: entry.subscribers !== "" ? entry.subscribers : previous.subscribers ?? "",
+                    views: entry.views !== "" ? entry.views : previous.views ?? "",
+                    videos: entry.videos !== "" ? entry.videos : previous.videos ?? "",
+                    data_source: "vidiq_imported"
+                });
+            }));
+            return Array.from(byDay.values())
+                .sort((left, right) => new Date(left.recorded_at) - new Date(right.recorded_at));
+        }
+
+        function parseCsvLine(line) {
+            const cells = [];
+            let value = "";
+            let quoted = false;
+            for (let index = 0; index < line.length; index += 1) {
+                const character = line[index];
+                if (character === '"') {
+                    if (quoted && line[index + 1] === '"') {
+                        value += '"';
+                        index += 1;
+                    } else {
+                        quoted = !quoted;
+                    }
+                } else if (character === "," && !quoted) {
+                    cells.push(value);
+                    value = "";
+                } else {
+                    value += character;
+                }
+            }
+            cells.push(value);
+            return cells;
+        }
+
+        function parseImportedNumber(value) {
+            if (value === null || value === undefined || String(value).trim() === "") {
+                return "";
+            }
+            const number = Number(String(value).replace(/,/g, ""));
+            return Number.isFinite(number) ? number : "";
+        }
+
+        async function fetchCommunitricsArchiveStats(channelId, fromDate, toDate) {
+            const originalUrl = "https://api.communitrics.com/stats/channel/" +
+                encodeURIComponent(channelId);
+            const captures = await fetchWaybackCaptures(originalUrl, true);
+            const candidates = captures.slice(-2).reverse();
+            let lastError = null;
+
+            for (const capture of candidates) {
+                try {
+                    const replayUrl = "https://web.archive.org/web/" + capture.timestamp +
+                        "id_/" + capture.original;
+                    const response = await fetchWaybackResource(replayUrl, { cache: "no-store" });
+                    if (!response.ok) {
+                        throw new Error("Archived Communitrics API returned status " + response.status + ".");
+                    }
+                    return normalizeCommunitricsHistory(await response.json(), fromDate, toDate);
+                } catch (error) {
+                    lastError = error;
+                }
+            }
+
+            if (lastError) {
+                throw lastError;
+            }
+            return [];
+        }
+
+        function normalizeCommunitricsHistory(payload, fromDate, toDate) {
+            const channelResult = Array.isArray(payload) ? payload[0] : payload;
+            const history = channelResult?.stats;
+            if (!Array.isArray(history)) {
+                return [];
+            }
+
+            const fromTime = new Date(fromDate + "T00:00:00.000Z").getTime();
+            const toTime = new Date(toDate + "T23:59:59.999Z").getTime();
+            const latestByDay = new Map();
+
+            history.forEach((entry) => {
+                const recordedTime = new Date(entry?.insertedAt).getTime();
+                if (!Number.isFinite(recordedTime) || recordedTime < fromTime || recordedTime > toTime) {
+                    return;
+                }
+
+                const day = new Date(recordedTime).toISOString().slice(0, 10);
+                const previous = latestByDay.get(day);
+                if (previous && new Date(previous.recorded_at).getTime() >= recordedTime) {
+                    return;
+                }
+
+                const positiveNumber = (value) => {
+                    const number = Number(value);
+                    return Number.isFinite(number) && number > 0 ? number : "";
+                };
+                latestByDay.set(day, {
+                    recorded_at: new Date(recordedTime).toISOString(),
+                    subscribers: positiveNumber(entry?.subscriberCount),
+                    views: positiveNumber(entry?.viewCount),
+                    videos: positiveNumber(entry?.videoCount),
+                    data_source: "communitrics_wayback_vidiq"
+                });
+            });
+
+            return Array.from(latestByDay.values())
+                .filter((entry) => hasSourceValue(entry.subscribers) ||
+                    hasSourceValue(entry.views) || hasSourceValue(entry.videos))
+                .sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
+        }
+
+        async function fetchSocialBladeArchiveStats(channel, trackyInfo, fromDate, toDate) {
+            const aliases = getSocialBladeAliases(channel, trackyInfo);
+            const comparisonAliases = aliases
+                .filter((alias) => !/^UC[\w-]{20,}$/i.test(alias))
+                .slice(0, 1);
+            const comparisonDiscovery = await Promise.allSettled(
+                comparisonAliases.map(fetchArchivedComparisons)
+            );
+            const monthlyDiscovery = await fetchArchivedChannelPageCaptures(channel.id, "/monthly");
+            const regularDiscovery = await fetchArchivedChannelPageCaptures(channel.id, "");
+            const uniqueCaptures = new Map();
+
+            comparisonDiscovery
+                .filter((result) => result.status === "fulfilled")
+                .flatMap((result) => result.value)
+                .forEach((capture) => {
+                    uniqueCaptures.set(capture.timestamp + "|" + capture.original, capture);
+                });
+
+            const comparisonCaptures = Array.from(uniqueCaptures.values())
+                .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+            const selectedComparisons = downsample(comparisonCaptures, 2);
+            const selectedMonthly = downsample(monthlyDiscovery, 2);
+            const selectedRegular = downsample(regularDiscovery, 6);
+            const comparisonPages = await fetchArchivedPagesSequentially(
+                selectedComparisons,
+                fetchArchivedComparisonPage
+            );
+            const monthlyPages = await fetchArchivedPagesSequentially(
+                selectedMonthly,
+                fetchArchivedMonthlyPage
+            );
+            const regularPages = await fetchArchivedPagesSequentially(
+                selectedRegular,
+                fetchArchivedRegularPage
+            );
+            const regularByDay = collectSocialBladePages(regularPages);
+            const monthlyByDay = collectSocialBladePages(monthlyPages);
+            const comparisonByDay = collectSocialBladePages(comparisonPages);
+            const byDay = new Map(regularByDay);
+
+            overlaySocialBladeMap(byDay, monthlyByDay);
+            overlaySocialBladeMap(byDay, comparisonByDay);
+
+            const fromTime = new Date(fromDate + "T00:00:00.000Z").getTime();
+            const toTime = new Date(toDate + "T23:59:59.999Z").getTime();
+            return Array.from(byDay.values())
+                .filter((entry) => {
+                    const time = new Date(entry.recorded_at).getTime();
+                    return time >= fromTime && time <= toTime;
+                })
+                .sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
+        }
+
+        async function fetchArchivedChannelPageCaptures(channelId, suffix) {
+            try {
+                return await fetchWaybackCaptures(
+                    "socialblade.com/youtube/channel/" + channelId + suffix,
+                    true
+                );
+            } catch (error) {
+                return [];
+            }
+        }
+
+        async function fetchArchivedPagesSequentially(captures, fetchPage) {
+            const results = [];
+
+            for (const capture of captures) {
+                try {
+                    results.push({ status: "fulfilled", value: await fetchPage(capture) });
+                } catch (error) {
+                    results.push({ status: "rejected", reason: error });
+                }
+            }
+
+            return results;
+        }
+
+        function overlaySocialBladeMap(target, higherPriority) {
+            higherPriority.forEach((entry, day) => {
+                const lowerPriority = target.get(day) || {};
+                target.set(day, {
+                    ...lowerPriority,
+                    ...entry,
+                    subscribers: hasSourceValue(entry.subscribers)
+                        ? entry.subscribers
+                        : lowerPriority.subscribers ?? "",
+                    views: hasSourceValue(entry.views) ? entry.views : lowerPriority.views ?? "",
+                    videos: hasSourceValue(entry.videos) ? entry.videos : lowerPriority.videos ?? ""
+                });
+            });
+        }
+
+        function collectSocialBladePages(pageResults) {
+            const byDay = new Map();
+
+            pageResults
+                .filter((result) => result.status === "fulfilled")
+                .forEach((result) => {
+                    result.value.forEach((entry) => {
+                        const day = getUtcDay(entry.recorded_at);
+                        const existing = byDay.get(day);
+
+                        if (!day) {
+                            return;
+                        }
+
+                        if (!existing) {
+                            byDay.set(day, entry);
+                            return;
+                        }
+
+                        byDay.set(day, {
+                            ...existing,
+                            subscribers: hasSourceValue(existing.subscribers)
+                                ? existing.subscribers
+                                : entry.subscribers,
+                            views: hasSourceValue(existing.views) ? existing.views : entry.views,
+                            videos: hasSourceValue(existing.videos) ? existing.videos : entry.videos
+                        });
+                    });
+                });
+
+            return byDay;
+        }
+
+        function hasSourceValue(value) {
+            return value !== null && value !== undefined && value !== "";
+        }
+
+        function getSocialBladeAliases(channel, trackyInfo) {
+            const candidates = [
+                trackyInfo?.handle,
+                channel.id,
+                channel.title,
+                trackyInfo?.name
+            ];
+            const seen = new Set();
+
+            return candidates
+                .map((value) => String(value || "").replace(/^@/, "").trim())
+                .filter(Boolean)
+                .filter((value) => {
+                    const key = value.toLowerCase();
+                    if (seen.has(key)) {
+                        return false;
+                    }
+                    seen.add(key);
+                    return true;
+                })
+                .slice(0, 4);
+        }
+
+        async function fetchArchivedComparisonPage(capture) {
+            return parseSocialBladeComparisonPage(await fetchArchivedSocialBladeHtml(capture));
+        }
+
+        async function fetchArchivedMonthlyPage(capture) {
+            return parseSocialBladeMonthlyPage(
+                await fetchArchivedSocialBladeHtml(capture),
+                capture.timestamp
+            );
+        }
+
+        async function fetchArchivedRegularPage(capture) {
+            const snapshot = extractSocialBladeHeaderSnapshot(
+                await fetchArchivedSocialBladeHtml(capture),
+                capture.timestamp,
+                "socialblade_wayback_channel"
+            );
+            return snapshot ? [snapshot] : [];
+        }
+
+        async function fetchArchivedSocialBladeHtml(capture) {
+            const replayUrl = "https://web.archive.org/web/" + capture.timestamp + "id_/" + capture.original;
+            const response = await fetchWaybackResource(replayUrl, { cache: "no-store" });
+            if (!response.ok) {
+                throw new Error("Archived Social Blade page returned status " + response.status + ".");
+            }
+
+            return response.text();
+        }
+
+        function parseSocialBladeComparisonPage(html) {
+            const byDay = new Map();
+
+            extractSocialBladeGraph(html, "subscribersYTDYGraph", "subscribers").forEach(addMetric);
+            extractSocialBladeGraph(html, "videoviewsYTDYGraph", "views").forEach(addMetric);
+
+            function addMetric(metricEntry) {
+                const existing = byDay.get(metricEntry.day) || {
+                    recorded_at: metricEntry.day + "T12:00:00.000Z",
+                    subscribers: "",
+                    views: "",
+                    videos: "",
+                    data_source: "socialblade_wayback"
+                };
+                existing[metricEntry.metric] = metricEntry.value;
+                byDay.set(metricEntry.day, existing);
+            }
+
+            return Array.from(byDay.values());
+        }
+
+        function parseSocialBladeMonthlyPage(html, captureTimestamp) {
+            const byDay = new Map();
+
+            extractSocialBladeGraph(html, "TotalSubscribers", "subscribers").forEach(addMetric);
+            extractSocialBladeGraph(html, "TotalVideoViews", "views").forEach(addMetric);
+            extractSocialBladeHighchartsSeries(
+                html,
+                "graph-youtube-daily-weekly-subscribers-container",
+                "subscribers"
+            ).forEach(addMetric);
+            extractSocialBladeHighchartsSeries(
+                html,
+                "graph-youtube-daily-weekly-vidviews-container",
+                "views"
+            ).forEach(addMetric);
+            const headerSnapshot = extractSocialBladeHeaderSnapshot(
+                html,
+                captureTimestamp,
+                "socialblade_wayback_monthly"
+            );
+
+            if (headerSnapshot) {
+                const day = getUtcDay(headerSnapshot.recorded_at);
+                const graphEntry = byDay.get(day) || {};
+                byDay.set(day, {
+                    ...graphEntry,
+                    ...headerSnapshot,
+                    subscribers: hasSourceValue(headerSnapshot.subscribers)
+                        ? headerSnapshot.subscribers
+                        : graphEntry.subscribers ?? "",
+                    views: hasSourceValue(headerSnapshot.views)
+                        ? headerSnapshot.views
+                        : graphEntry.views ?? "",
+                    videos: hasSourceValue(headerSnapshot.videos)
+                        ? headerSnapshot.videos
+                        : graphEntry.videos ?? ""
+                });
+            }
+
+            function addMetric(metricEntry) {
+                const existing = byDay.get(metricEntry.day) || {
+                    recorded_at: metricEntry.day + "T12:00:00.000Z",
+                    subscribers: "",
+                    views: "",
+                    videos: "",
+                    data_source: "socialblade_wayback_monthly"
+                };
+                if (!hasSourceValue(existing[metricEntry.metric])) {
+                    existing[metricEntry.metric] = metricEntry.value;
+                }
+                byDay.set(metricEntry.day, existing);
+            }
+
+            return Array.from(byDay.values());
+        }
+
+        function extractSocialBladeHeaderSnapshot(html, captureTimestamp, source) {
+            const recordedAt = parseWaybackTimestamp(captureTimestamp);
+            if (!recordedAt) {
+                return null;
+            }
+
+            const snapshot = {
+                recorded_at: recordedAt,
+                subscribers: "",
+                views: "",
+                videos: "",
+                data_source: source
+            };
+            const fields = {
+                subscribers: "subs",
+                views: "views",
+                videos: "uploads"
+            };
+            let foundValue = false;
+
+            Object.entries(fields).forEach(([metric, sourceName]) => {
+                const pattern = new RegExp(
+                    'id=["\\\']youtube-stats-header-' + sourceName + '["\\\'][^>]*>([\\d,]+)',
+                    "i"
+                );
+                const match = html.match(pattern);
+                if (match) {
+                    snapshot[metric] = Number(match[1].replace(/,/g, ""));
+                    foundValue = true;
+                }
+            });
+
+            return foundValue ? snapshot : null;
+        }
+
+        function parseWaybackTimestamp(timestamp) {
+            const value = String(timestamp || "");
+            if (!/^\d{14}$/.test(value)) {
+                return "";
+            }
+
+            const iso = value.slice(0, 4) + "-" + value.slice(4, 6) + "-" + value.slice(6, 8) +
+                "T" + value.slice(8, 10) + ":" + value.slice(10, 12) + ":" + value.slice(12, 14) + "Z";
+            const time = new Date(iso).getTime();
+            return Number.isFinite(time) ? new Date(time).toISOString() : "";
+        }
+
+        function extractSocialBladeGraph(html, graphId, metric) {
+            const markerIndex = html.indexOf(graphId);
+            if (markerIndex === -1) {
+                return [];
+            }
+
+            const scriptEnd = html.indexOf("<" + "/script>", markerIndex);
+            const segment = html.slice(markerIndex, scriptEnd === -1 ? html.length : scriptEnd);
+            const rowPattern = /"(\d{4}-\d{2}-\d{2}),([^"\\]+)\\n"/g;
+            const rows = [];
+            let match;
+
+            while ((match = rowPattern.exec(segment)) !== null) {
+                const firstChannelValue = match[2].split(",")[0].trim();
+                const value = Number(firstChannelValue);
+                if (Number.isFinite(value)) {
+                    rows.push({ day: match[1], metric, value });
+                }
+            }
+
+            return rows;
+        }
+
+        function extractSocialBladeHighchartsSeries(html, chartId, metric) {
+            const marker = "Highcharts.chart('" + chartId + "'";
+            const markerIndex = html.indexOf(marker);
+            if (markerIndex === -1) {
+                return [];
+            }
+
+            const nextChart = html.indexOf("Highcharts.chart(", markerIndex + marker.length);
+            const segment = html.slice(markerIndex, nextChart === -1 ? html.length : nextChart);
+            const dataStart = segment.indexOf("data:");
+            if (dataStart === -1) {
+                return [];
+            }
+
+            const dataSegment = segment.slice(dataStart);
+            const pointPattern = /\[(\d{10,13}),(-?\d+(?:\.\d+)?)\]/g;
+            const rows = [];
+            let match;
+
+            while ((match = pointPattern.exec(dataSegment)) !== null) {
+                const timestamp = Number(match[1]);
+                const value = Number(match[2]);
+                if (!Number.isFinite(timestamp) || !Number.isFinite(value)) {
+                    continue;
+                }
+
+                const time = match[1].length === 10 ? timestamp * 1000 : timestamp;
+                const day = new Date(time).toISOString().slice(0, 10);
+                rows.push({ day, metric, value });
+            }
+
+            return rows;
+        }
+
+        function normalizeTrackyHistory(history, fromDate, toDate) {
+            if (!Array.isArray(history)) {
+                return [];
+            }
+
+            const fromTime = new Date(fromDate + "T00:00:00.000Z").getTime();
+            const toTime = new Date(toDate + "T23:59:59.999Z").getTime();
+            const latestByDay = new Map();
+
+            history.forEach((entry) => {
+                const recordedAt = entry?.date;
+                const recordedTime = new Date(recordedAt).getTime();
+                const subscribers = Number(entry?.count);
+
+                if (!Number.isFinite(recordedTime) || !Number.isFinite(subscribers) ||
+                    recordedTime < fromTime || recordedTime > toTime) {
+                    return;
+                }
+
+                const day = new Date(recordedTime).toISOString().slice(0, 10);
+                const previous = latestByDay.get(day);
+                if (!previous || new Date(previous.recorded_at).getTime() < recordedTime) {
+                    latestByDay.set(day, {
+                        recorded_at: new Date(recordedTime).toISOString(),
+                        subscribers,
+                        views: "",
+                        videos: "",
+                        data_source: "tracky"
+                    });
+                }
+            });
+
+            return fillTrackySubscriberGaps(
+                Array.from(latestByDay.values())
+                    .sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at))
+            );
+        }
+
+        function fillTrackySubscriberGaps(stats) {
+            if (stats.length < 2) {
+                return stats.slice();
+            }
+
+            const filled = [];
+            const oneDay = 24 * 60 * 60 * 1000;
+
+            for (let index = 0; index < stats.length - 1; index += 1) {
+                const start = stats[index];
+                const end = stats[index + 1];
+                const startTime = new Date(start.recorded_at).getTime();
+                const endTime = new Date(end.recorded_at).getTime();
+                const startDay = Date.parse(getUtcDay(start.recorded_at) + "T00:00:00.000Z");
+                const endDay = Date.parse(getUtcDay(end.recorded_at) + "T00:00:00.000Z");
+
+                filled.push(start);
+
+                if (!Number.isFinite(startTime) || !Number.isFinite(endTime) || endTime <= startTime) {
+                    continue;
+                }
+
+                for (let dayTime = startDay + oneDay; dayTime < endDay; dayTime += oneDay) {
+                    const recordedTime = dayTime + oneDay / 2;
+                    const ratio = (recordedTime - startTime) / (endTime - startTime);
+                    const subscribers = Math.round(
+                        Number(start.subscribers) +
+                        (Number(end.subscribers) - Number(start.subscribers)) * ratio
+                    );
+
+                    filled.push({
+                        recorded_at: new Date(recordedTime).toISOString(),
+                        subscribers,
+                        views: "",
+                        videos: "",
+                        data_source: "tracky_estimated"
+                    });
+                }
+            }
+
+            filled.push(stats[stats.length - 1]);
+            return filled;
+        }
+
+        function mergeStatsBySourcePriority(vidiqStats, importedVidiqStats, communitricsStats, socialBladeStats, trackyStats) {
+            const byDay = new Map();
+
+            const firstVidiqTime = vidiqStats.reduce((earliest, entry) => {
+                const time = new Date(entry?.recorded_at).getTime();
+                return Number.isFinite(time) ? Math.min(earliest, time) : earliest;
+            }, Infinity);
+            const importedBeforeLive = importedVidiqStats.filter((entry) => {
+                const time = new Date(entry?.recorded_at).getTime();
+                return Number.isFinite(time) && time < firstVidiqTime;
+            });
+
+            trackyStats.forEach((entry) => setDay(entry, entry.data_source || "tracky"));
+            overlayStats(socialBladeStats, "socialblade_wayback");
+            overlayStats(communitricsStats, "communitrics_wayback_vidiq");
+            overlayStats(importedBeforeLive, "vidiq_imported");
+            vidiqStats.forEach((entry) => setDay(entry, entry.data_source || "vidiq"));
+
+            function overlayStats(stats, defaultSource) {
+                stats.forEach((entry) => {
+                const day = getUtcDay(entry.recorded_at);
+                const lowerPriority = byDay.get(day) || {};
+
+                if (day) {
+                    byDay.set(day, {
+                        ...lowerPriority,
+                        ...entry,
+                        subscribers: hasValue(entry.subscribers) ? entry.subscribers : lowerPriority.subscribers ?? "",
+                        views: hasValue(entry.views) ? entry.views : lowerPriority.views ?? "",
+                        videos: hasValue(entry.videos) ? entry.videos : lowerPriority.videos ?? "",
+                        data_source: entry.data_source || defaultSource
+                    });
+                }
+                });
+            }
+
+            function setDay(entry, source) {
+                const day = getUtcDay(entry.recorded_at);
+                if (day) {
+                    byDay.set(day, { ...entry, data_source: source });
+                }
+            }
+
+            function hasValue(value) {
+                return value !== null && value !== undefined && value !== "";
+            }
+
+            return Array.from(byDay.values())
+                .sort((a, b) => new Date(a.recorded_at) - new Date(b.recorded_at));
+        }
+
+        function getUtcDay(value) {
+            const time = new Date(value).getTime();
+            return Number.isFinite(time) ? new Date(time).toISOString().slice(0, 10) : "";
         }
 
         window.addEventListener("load", () => {
@@ -1546,15 +2468,17 @@
         }
 
         function getChartData(stats, metric) {
+            const metricStats = stats.filter((entry) => hasMetricValue(entry, metric));
+
             if (currentChartMode === "total") {
-                return stats.map((entry) => ({
+                return metricStats.map((entry) => ({
                     x: new Date(entry.recorded_at).getTime(),
-                    y: Number(getMetricValue(entry, metric)) || 0,
+                    y: Number(getMetricValue(entry, metric)),
                     recordedAt: entry.recorded_at
                 }));
             }
 
-            const sampledStats = resampleStats(stats, currentChartMode);
+            const sampledStats = resampleStats(metricStats, currentChartMode);
 
             return sampledStats
                 .map((entry, index) => {
@@ -1573,6 +2497,11 @@
                     };
                 })
                 .filter(Boolean);
+        }
+
+        function hasMetricValue(entry, metric) {
+            const value = getMetricValue(entry, metric);
+            return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
         }
 
         function getChartMetricLabel(metric) {
@@ -1608,8 +2537,14 @@
         }
 
         function renderMetricCell(entry, previousEntry, metric) {
+            if (!hasMetricValue(entry, metric)) {
+                return '<span class="metric-cell"><span>&mdash;</span></span>';
+            }
+
             const value = Number(getMetricValue(entry, metric)) || 0;
-            const previousValue = previousEntry ? Number(getMetricValue(previousEntry, metric)) || 0 : value;
+            const previousValue = previousEntry && hasMetricValue(previousEntry, metric)
+                ? Number(getMetricValue(previousEntry, metric))
+                : value;
             const gain = value - previousValue;
 
             return `
@@ -1680,7 +2615,9 @@
         function buildCombinedMetricRows(channelEntries, frequency, metric) {
             const processedEntries = channelEntries
                 .map((channelEntry) => {
-                    const resampledStats = resampleStats(attachMetricSeries(channelEntry.stats), frequency);
+                    const metricStats = attachMetricSeries(channelEntry.stats)
+                        .filter((entry) => hasMetricValue(entry, metric));
+                    const resampledStats = resampleStats(metricStats, frequency);
                     const stats = metric === "subscribers"
                         ? getCombinedSubscriberStats(resampledStats)
                         : getCombinedMetricStats(resampledStats, metric);
